@@ -1,3 +1,4 @@
+import hashlib
 import re
 from typing import Any
 
@@ -75,40 +76,61 @@ class AegisAdjudicator:
                 decision=decision,
             )
 
+        idempotency_key = hashlib.sha256(
+            f"{claim.claim_id}:{claim.patient_id}:{claim.cpt_code}:{claim.claimed_amount}".encode()
+        ).hexdigest()
         if approved:
             mutation = self.stripe_tool.release_claim_payout(
                 claim.claim_id,
                 claim.claimed_amount,
+                idempotency_key=idempotency_key,
             )
             expected_status = "settled_approved"
         else:
             mutation = self.stripe_tool.reject_claim(claim.claim_id, rationale)
             expected_status = "denied_closed"
 
-        verification = self.stripe_tool.verify_state(claim.claim_id, expected_status)
-        if not verification.verified:
-            error = ArgaStateDivergenceError(
-                f"[Arga State Divergence] Expected {expected_status!r}, observed {verification.observed_state!r}"
+        verification = None
+        transaction_stage = "state_verification"
+        try:
+            verification = self.stripe_tool.verify_state(claim.claim_id, expected_status)
+            if not verification.verified:
+                raise ArgaStateDivergenceError(
+                    f"[Arga State Divergence] Expected {expected_status!r}, observed {verification.observed_state!r}"
+                )
+            transaction_stage = "audit_dispatch"
+            dispatch = self.slack_tool.post_adjudication_audit(decision, verification)
+        except Exception as exc:
+            compensation_reason = "Downstream state divergence / audit failure"
+            compensation = self.stripe_tool.compensate_freeze_hold(
+                claim.claim_id,
+                reason=compensation_reason,
             )
-            dispatch = self.slack_tool.post_escalation_alert(claim.claim_id, str(error))
+            dispatch = self.slack_tool.post_escalation_alert(
+                claim.claim_id,
+                f"CRITICAL Saga compensation executed: {exc}",
+            )
             return {
-                "status": "failed",
-                "stage": "state_verification",
-                "error": str(error),
+                "status": "compensated_rolled_back",
+                "stage": transaction_stage,
+                "error": str(exc),
                 "decision": decision.model_dump(),
                 "mutation": mutation,
-                "verification": verification.model_dump(),
+                "compensation": compensation,
+                "verification": verification.model_dump() if verification else None,
                 "dispatch": dispatch,
+                "idempotency_key": idempotency_key,
             }
 
-        dispatch = self.slack_tool.post_adjudication_audit(decision, verification)
         return {
             "status": "completed",
             "stage": "audit_dispatch",
             "decision": decision.model_dump(),
             "mutation": mutation,
+            "compensation": None,
             "verification": verification.model_dump(),
             "dispatch": dispatch,
+            "idempotency_key": idempotency_key,
         }
 
     def _evaluate_coverage(self, claim: ClaimDisputeInput) -> dict[str, bool]:

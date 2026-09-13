@@ -26,8 +26,10 @@ class StripeLedgerTool:
                 "amount": 14500.00,
                 "patient_id": "PAT-9841",
                 "disbursed_amount": 0.0,
+                "audit_record": [],
             }
         }
+        self.idempotency_keys: dict[str, dict] = {}
         self._last_action = "read_state"
 
     def place_hold(self, claim_id: str, amount: float) -> dict:
@@ -41,17 +43,58 @@ class StripeLedgerTool:
             {"metadata[aegis_status]": "on_hold", "metadata[claim_amount]": str(amount)},
         )
 
-    def release_claim_payout(self, claim_id: str, amount: float) -> dict:
+    def release_claim_payout(
+        self,
+        claim_id: str,
+        amount: float,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        if idempotency_key and idempotency_key in self.idempotency_keys:
+            return deepcopy(self.idempotency_keys[idempotency_key]["result"])
+
         self._last_action = "release_claim_payout"
         if self.twin_mode:
             claim = self._get_twin_claim(claim_id)
             claim.update(status="settled_approved", disbursed_amount=amount)
+            result = deepcopy(claim)
+        else:
+            result = self._update_live_claim(
+                claim_id,
+                {
+                    "metadata[aegis_status]": "settled_approved",
+                    "metadata[disbursed_amount]": str(amount),
+                },
+                idempotency_key=idempotency_key,
+            )
+        if idempotency_key:
+            self.idempotency_keys[idempotency_key] = {
+                "processed": True,
+                "result": deepcopy(result),
+            }
+        return result
+
+    def compensate_freeze_hold(self, claim_id: str, reason: str) -> dict:
+        self._last_action = "compensate_freeze_hold"
+        if self.twin_mode:
+            claim = self._get_twin_claim(claim_id)
+            previous_status = claim["status"]
+            claim["status"] = "on_hold_frozen"
+            claim["audit_record"] = [
+                *claim.get("audit_record", []),
+                {
+                    "event": "saga_compensation",
+                    "from_status": previous_status,
+                    "to_status": "on_hold_frozen",
+                    "reason": reason,
+                },
+            ]
             return deepcopy(claim)
         return self._update_live_claim(
             claim_id,
             {
-                "metadata[aegis_status]": "settled_approved",
-                "metadata[disbursed_amount]": str(amount),
+                "metadata[aegis_status]": "on_hold_frozen",
+                "metadata[compensation_event]": "saga_compensation",
+                "metadata[compensation_reason]": reason,
             },
         )
 
@@ -88,9 +131,17 @@ class StripeLedgerTool:
             raise KeyError(f"Claim not found: {claim_id}")
         return self.claims[claim_id]
 
-    def _update_live_claim(self, claim_id: str, data: dict[str, str]) -> dict:
+    def _update_live_claim(
+        self,
+        claim_id: str,
+        data: dict[str, str],
+        idempotency_key: str | None = None,
+    ) -> dict:
+        headers = self._headers()
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         response = self.client.post(
-            self._payment_intent_url(claim_id), headers=self._headers(), data=data
+            self._payment_intent_url(claim_id), headers=headers, data=data
         )
         response.raise_for_status()
         return response.json()

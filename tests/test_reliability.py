@@ -45,6 +45,14 @@ def test_nominal_adjudication_success() -> None:
     assert stripe.claims[claim["claim_id"]]["status"] == "settled_approved"
     assert result["verification"]["verified"] is True
     assert result["verification"]["observed_state"] == "settled_approved"
+    assert result["idempotency_key"] in stripe.idempotency_keys
+    cached_result = stripe.release_claim_payout(
+        claim["claim_id"],
+        claim["claimed_amount"],
+        idempotency_key=result["idempotency_key"],
+    )
+    assert cached_result == result["mutation"]
+    assert len(stripe.idempotency_keys) == 1
     assert len(slack.dispatched_messages) == 1
     audit_payload = slack.dispatched_messages[0]
     assert result["decision"]["policy_reference"] == "sha_c9f482a"
@@ -134,7 +142,12 @@ def test_clinical_criteria_denial() -> None:
 
 def test_arga_state_divergence_detection() -> None:
     class StaleStripeTwin(StripeLedgerTool):
-        def release_claim_payout(self, claim_id: str, amount: float) -> dict:
+        def release_claim_payout(
+            self,
+            claim_id: str,
+            amount: float,
+            idempotency_key: str | None = None,
+        ) -> dict:
             self._last_action = "release_claim_payout"
             return deepcopy(self.claims[claim_id])
 
@@ -148,14 +161,43 @@ def test_arga_state_divergence_detection() -> None:
 
     result = adjudicator.adjudicate_claim(valid_claim())
 
-    assert result["status"] == "failed"
+    assert result["status"] == "compensated_rolled_back"
     assert result["stage"] == "state_verification"
     assert result["verification"]["verified"] is False
     assert result["verification"]["expected_state"] == "settled_approved"
     assert result["verification"]["observed_state"] == "on_hold"
     assert "[Arga State Divergence]" in result["error"]
-    assert stripe.claims["CLM-1092"]["status"] == "on_hold"
+    assert stripe.claims["CLM-1092"]["status"] == "on_hold_frozen"
+    assert result["compensation"]["status"] == "on_hold_frozen"
     assert len(slack.dispatched_messages) == 1
     emergency_alert = slack.dispatched_messages[0]
     assert emergency_alert["channel"] == "#compliance-escalations"
-    assert "HIGH PRIORITY" in str(emergency_alert)
+    assert "CRITICAL Saga compensation executed" in str(emergency_alert)
+
+
+def test_saga_compensating_rollback_on_divergence() -> None:
+    class AuditFailureSlackTwin(SlackAuditTool):
+        def post_adjudication_audit(self, decision: object, verification: object) -> dict:
+            raise RuntimeError("Injected downstream audit dispatch failure")
+
+    stripe = StripeLedgerTool(twin_mode=True)
+    slack = AuditFailureSlackTwin(twin_mode=True)
+    adjudicator = AegisAdjudicator(
+        github_tool=GitHubPolicyTool(twin_mode=True),
+        stripe_tool=stripe,
+        slack_tool=slack,
+    )
+
+    result = adjudicator.adjudicate_claim(valid_claim())
+
+    assert result["status"] == "compensated_rolled_back"
+    assert result["stage"] == "audit_dispatch"
+    assert result["mutation"]["status"] == "settled_approved"
+    assert stripe.claims["CLM-1092"]["status"] == "on_hold_frozen"
+    assert result["compensation"]["status"] == "on_hold_frozen"
+    compensation_event = stripe.claims["CLM-1092"]["audit_record"][-1]
+    assert compensation_event["event"] == "saga_compensation"
+    assert compensation_event["from_status"] == "settled_approved"
+    assert compensation_event["to_status"] == "on_hold_frozen"
+    assert result["verification"]["verified"] is True
+    assert slack.dispatched_messages[0]["channel"] == "#compliance-escalations"
