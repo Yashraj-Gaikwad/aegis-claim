@@ -1,4 +1,7 @@
+import hashlib
+import json
 import os
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
@@ -161,6 +164,59 @@ class SlackAuditTool:
 </html>
 """
         artifact_path.write_text(document, encoding="utf-8")
+        return str(artifact_path.resolve())
+
+    def export_audit_json(
+        self,
+        decision: dict,
+        verification: dict,
+        filename: str = "audit_artifact.json",
+    ) -> str:
+        claim_record = {
+            "claim_id": str(decision["claim_id"]),
+            "patient_id": str(decision["patient_id"]),
+            "cpt_code": str(decision.get("cpt_code", "33361")),
+            "icd10_code": str(decision.get("icd10_code", "I35.0")),
+            "evidence_quote": str(decision["exact_evidence_quote"]),
+            "policy_commit_sha": str(decision["policy_reference"]),
+        }
+        fingerprint_source = json.dumps(
+            claim_record,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        verified = verification.get("verified") is True
+        audit_event = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "claim_fingerprint": hashlib.sha256(fingerprint_source).hexdigest(),
+            "fingerprint_algorithm": "SHA-256",
+            "claim_id": claim_record["claim_id"],
+            "patient_id": claim_record["patient_id"],
+            "cpt_code": claim_record["cpt_code"],
+            "icd10_code": claim_record["icd10_code"],
+            "verbatim_grounded_evidence_quote": claim_record["evidence_quote"],
+            "policy_commit_sha": claim_record["policy_commit_sha"],
+            "stripe_dispute_state": {
+                "expected": str(verification["expected_state"]),
+                "observed": str(verification["observed_state"]),
+            },
+            "saga_compensation": {
+                "status": str(decision.get("saga_compensation_status", "not_required")),
+            },
+            "verification_status": "verified" if verified else "divergent",
+            "verified": verified,
+            "event_trail": [
+                {"event": "CLINICAL_EVIDENCE_GROUNDED", "status": "verified"},
+                {"event": "POLICY_PROVENANCE_BOUND", "status": claim_record["policy_commit_sha"]},
+                {"event": "STRIPE_STATE_OBSERVED", "status": str(verification["observed_state"])},
+                {"event": "ARGA_STATE_VERIFIED", "status": verified},
+            ],
+        }
+        artifact_path = Path(__file__).resolve().parents[2] / Path(filename).name
+        artifact_path.write_text(
+            json.dumps(audit_event, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
         return str(artifact_path.resolve())
 
     def post_escalation_alert(self, claim_id: str, issue_reason: str) -> dict:

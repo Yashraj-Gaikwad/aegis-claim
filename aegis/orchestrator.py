@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from aegis.deid import scrub_phi
 from aegis.guardrail import (
     ArgaStateDivergenceError,
     LemmaGuardrail,
@@ -20,10 +21,12 @@ class AegisAdjudicator:
         github_tool: GitHubPolicyTool | None = None,
         stripe_tool: StripeLedgerTool | None = None,
         slack_tool: SlackAuditTool | None = None,
+        deidentify_phi: bool = True,
     ) -> None:
         self.github_tool = github_tool or GitHubPolicyTool(twin_mode=True)
         self.stripe_tool = stripe_tool or StripeLedgerTool(twin_mode=True)
         self.slack_tool = slack_tool or SlackAuditTool(twin_mode=True)
+        self.deidentify_phi = deidentify_phi
         self.guardrail = LemmaGuardrail()
 
     def adjudicate_claim(self, claim_input: dict) -> dict:
@@ -33,6 +36,11 @@ class AegisAdjudicator:
             self.guardrail.validate_claim_integrity(claim)
         except (ValidationError, LemmaPlaceholderViolation) as exc:
             return self._escalation_failure(claim_id, "pre_action_guard", str(exc))
+
+        phi_redactions: list[str] = []
+        if self.deidentify_phi:
+            clinical_notes, phi_redactions = scrub_phi(claim.clinical_notes)
+            claim = claim.model_copy(update={"clinical_notes": clinical_notes})
 
         policy_text = self.github_tool.fetch_policy(claim.cpt_code)
         policy_sha = self.github_tool.get_policy_commit_sha()
@@ -67,6 +75,11 @@ class AegisAdjudicator:
             policy_reference=policy_sha,
             requires_human_escalation=requires_escalation,
         )
+        decision_record = {
+            **decision.model_dump(),
+            "cpt_code": claim.cpt_code,
+            "icd10_code": claim.icd10_code,
+        }
 
         if requires_escalation:
             return self._escalation_failure(
@@ -114,23 +127,25 @@ class AegisAdjudicator:
                 "status": "compensated_rolled_back",
                 "stage": transaction_stage,
                 "error": str(exc),
-                "decision": decision.model_dump(),
+                "decision": decision_record,
                 "mutation": mutation,
                 "compensation": compensation,
                 "verification": verification.model_dump() if verification else None,
                 "dispatch": dispatch,
                 "idempotency_key": idempotency_key,
+                "phi_redactions": phi_redactions,
             }
 
         return {
             "status": "completed",
             "stage": "audit_dispatch",
-            "decision": decision.model_dump(),
+            "decision": decision_record,
             "mutation": mutation,
             "compensation": None,
             "verification": verification.model_dump(),
             "dispatch": dispatch,
             "idempotency_key": idempotency_key,
+            "phi_redactions": phi_redactions,
         }
 
     def _evaluate_coverage(self, claim: ClaimDisputeInput) -> dict[str, bool]:

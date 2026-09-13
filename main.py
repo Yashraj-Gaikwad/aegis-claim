@@ -1,3 +1,4 @@
+import argparse
 from copy import deepcopy
 import sys
 
@@ -96,16 +97,8 @@ def render_summary(console: Console, stripe_untouched: bool) -> None:
     )
 
 
-def main() -> None:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-    console = Console()
-    github = GitHubPolicyTool(twin_mode=True)
-    stripe = StripeLedgerTool(twin_mode=True)
-    slack = SlackAuditTool(twin_mode=True)
-    adjudicator = AegisAdjudicator(github, stripe, slack)
-
-    valid_claim = {
+def valid_claim_payload() -> dict:
+    return {
         "claim_id": "CLM-1092",
         "patient_id": "PAT-9841",
         "icd10_code": "I35.0",
@@ -117,18 +110,15 @@ def main() -> None:
             "mean aortic gradient of 46 mmHg. The multidisciplinary heart team signed off on TAVR."
         ),
     }
-    approved_result = adjudicator.adjudicate_claim(valid_claim)
 
-    stripe_before_invalid = deepcopy(stripe.claims)
-    invalid_claim = {
-        **valid_claim,
-        "claim_id": "CLM-PLACEHOLDER-TEST",
-        "patient_id": "unknown",
-    }
-    invalid_result = adjudicator.adjudicate_claim(invalid_claim)
-    stripe_untouched = stripe.claims == stripe_before_invalid
 
-    render_header(console)
+def render_nominal_scenario(
+    console: Console,
+    adjudicator: AegisAdjudicator,
+    slack: SlackAuditTool,
+    claim: dict,
+) -> dict:
+    result = adjudicator.adjudicate_claim(claim)
     console.print(
         Panel(
             "[bold]CLM-1092[/bold]  •  PAT-9841  •  CPT 33361  •  ICD-10 I35.0  •  "
@@ -137,14 +127,29 @@ def main() -> None:
             border_style="green",
         )
     )
-    render_nominal_table(console, approved_result)
-    html_path = slack.render_html_audit_card(
-        approved_result["decision"],
-        approved_result["verification"],
-    )
+    render_nominal_table(console, result)
+    html_path = slack.render_html_audit_card(result["decision"], result["verification"])
+    json_path = slack.export_audit_json(result["decision"], result["verification"])
     console.print(
         f"[dim cyan]📄 Generated Visual Audit Artifact: file:///{html_path}[/dim cyan]"
     )
+    console.print(
+        f"[dim cyan]📋 Generated Machine Audit Artifact: file:///{json_path}[/dim cyan]"
+    )
+    return result
+
+
+def render_placeholder_scenario(
+    console: Console,
+    adjudicator: AegisAdjudicator,
+    stripe: StripeLedgerTool,
+    claim: dict,
+) -> tuple[dict, bool]:
+    stripe_before_invalid = deepcopy(stripe.claims)
+    invalid_result = adjudicator.adjudicate_claim(
+        {**claim, "claim_id": "CLM-PLACEHOLDER-TEST", "patient_id": "unknown"}
+    )
+    stripe_untouched = stripe.claims == stripe_before_invalid
     console.print(
         Panel(
             'Injected payload: [bold bright_red]patient_id="unknown"[/bold bright_red]',
@@ -153,12 +158,101 @@ def main() -> None:
         )
     )
     render_safety_table(console, stripe_untouched)
-    render_summary(console, stripe_untouched)
+    return invalid_result, stripe_untouched
 
-    assert approved_result["status"] == "completed"
-    assert approved_result["verification"]["verified"] is True
-    assert invalid_result["stage"] == "pre_action_guard"
-    assert stripe_untouched
+
+def render_rollback_scenario(console: Console, claim: dict) -> dict:
+    class AuditFailureSlackTool(SlackAuditTool):
+        def post_adjudication_audit(self, decision: object, verification: object) -> dict:
+            raise RuntimeError("Injected downstream compliance dispatch failure")
+
+    stripe = StripeLedgerTool(twin_mode=True)
+    slack = AuditFailureSlackTool(twin_mode=True)
+    adjudicator = AegisAdjudicator(
+        GitHubPolicyTool(twin_mode=True),
+        stripe,
+        slack,
+    )
+    result = adjudicator.adjudicate_claim(claim)
+    table = Table(
+        title="[bold yellow]↩ Saga Compensating Transaction[/bold yellow]",
+        border_style="yellow",
+        header_style="bold bright_white on dark_orange",
+        expand=True,
+    )
+    table.add_column("Transaction Stage", style="bold cyan")
+    table.add_column("State Transition")
+    table.add_column("Outcome", style="bold")
+    table.add_row("Stripe payout", "on_hold → settled_approved", "[green]COMMITTED[/green]")
+    table.add_row(
+        "Slack audit dispatch",
+        "Injected downstream failure",
+        "[red]FAILED[/red]",
+    )
+    table.add_row(
+        "Saga compensation",
+        "settled_approved → on_hold_frozen",
+        "[yellow]COMPENSATED_ROLLED_BACK[/yellow]",
+    )
+    console.print(
+        Panel(
+            "A downstream audit failure is injected after payout to prove automatic financial containment.",
+            title="[bold bright_white]SCENARIO 3 — SAGA ROLLBACK INTERLOCK[/bold bright_white]",
+            border_style="yellow",
+        )
+    )
+    console.print(table)
+    assert result["status"] == "compensated_rolled_back"
+    assert stripe.claims[claim["claim_id"]]["status"] == "on_hold_frozen"
+    return result
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run AegisClaim deterministic demo scenarios")
+    parser.add_argument(
+        "--scenario",
+        choices=("all", "nominal", "placeholder", "rollback"),
+        default="all",
+        help="scenario to execute (default: all)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    console = Console()
+    github = GitHubPolicyTool(twin_mode=True)
+    stripe = StripeLedgerTool(twin_mode=True)
+    slack = SlackAuditTool(twin_mode=True)
+    adjudicator = AegisAdjudicator(github, stripe, slack)
+    claim = valid_claim_payload()
+    approved_result = None
+    invalid_result = None
+    stripe_untouched = True
+
+    render_header(console)
+    if args.scenario in ("all", "nominal"):
+        approved_result = render_nominal_scenario(console, adjudicator, slack, claim)
+    if args.scenario in ("all", "placeholder"):
+        invalid_result, stripe_untouched = render_placeholder_scenario(
+            console,
+            adjudicator,
+            stripe,
+            claim,
+        )
+    if args.scenario == "rollback":
+        render_rollback_scenario(console, claim)
+    if args.scenario == "all":
+        render_summary(console, stripe_untouched)
+
+    if approved_result is not None:
+        assert approved_result["status"] == "completed"
+        assert approved_result["verification"]["verified"] is True
+    if invalid_result is not None:
+        assert invalid_result["stage"] == "pre_action_guard"
+        assert stripe_untouched
 
 
 if __name__ == "__main__":
