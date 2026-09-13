@@ -290,7 +290,7 @@ For live mode, provide credentials through process environment variables or an a
 
 ## 2-Minute Demo Video
 
-[Watch the 2-Minute Architecture & Evaluation Demo](https://youtu.be/DEMO_LINK_PLACEHOLDER)
+[Watch the 2-Minute Architecture & Evaluation Demo](https://www.youtube.com/watch?v=NUNAj7wYMAo)
 
 > Replace `DEMO_LINK_PLACEHOLDER` with the final unlisted or public YouTube video ID before submission.
 
