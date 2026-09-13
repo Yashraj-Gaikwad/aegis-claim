@@ -138,6 +138,13 @@ def main() -> None:
         )
     )
     render_nominal_table(console, approved_result)
+    html_path = slack.render_html_audit_card(
+        approved_result["decision"],
+        approved_result["verification"],
+    )
+    console.print(
+        f"[dim cyan]📄 Generated Visual Audit Artifact: file:///{html_path}[/dim cyan]"
+    )
     console.print(
         Panel(
             'Injected payload: [bold bright_red]patient_id="unknown"[/bold bright_red]',
