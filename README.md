@@ -4,6 +4,16 @@
 
 **Multi-App AI Agent Hackathon (Arga Labs & Lemma AI) | ACM FAccT 2027 Research Benchmark**
 
+<p align="center">
+  <img src="AegisClaim.png" alt="AegisClaim — Zero Silent Failures" width="100%" />
+</p>
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=NUNAj7wYMAo">
+    <img src="https://img.shields.io/badge/Watch%20Demo-YouTube-FF0000?style=for-the-badge&logo=youtube" alt="Watch the 2-minute demo on YouTube" />
+  </a>
+</p>
+
 ![Pytest](https://img.shields.io/badge/Pytest-13%2F13%20Passing-2ea44f?style=for-the-badge)
 ![Responsible AI](https://img.shields.io/badge/Responsible%20AI-Auditable-5b4bdb?style=for-the-badge)
 ![Arga Digital Twin](https://img.shields.io/badge/Arga%20Digital%20Twin-Verified-0969da?style=for-the-badge)
