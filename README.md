@@ -4,7 +4,7 @@
 
 **Multi-App AI Agent Hackathon (Arga Labs & Lemma AI) | ACM FAccT 2027 Research Benchmark**
 
-![Pytest](https://img.shields.io/badge/Pytest-6%2F6%20Passing-2ea44f?style=for-the-badge)
+![Pytest](https://img.shields.io/badge/Pytest-13%2F13%20Passing-2ea44f?style=for-the-badge)
 ![Responsible AI](https://img.shields.io/badge/Responsible%20AI-Auditable-5b4bdb?style=for-the-badge)
 ![Arga Digital Twin](https://img.shields.io/badge/Arga%20Digital%20Twin-Verified-0969da?style=for-the-badge)
 ![Lemma](https://img.shields.io/badge/Lemma-Zero%20Silent%20Failure-c2185b?style=for-the-badge)
@@ -176,6 +176,11 @@ After each approval or denial, `verify_state` independently reads the ledger. A 
 | Ungrounded evidence | Fabricated clinical quote | Payout blocked; grounding error | PASS |
 | Clinical criteria denial | Asymptomatic, valve area 1.8 cm², gradient 22 mmHg | `denied_closed` read back and verified | PASS |
 | Arga divergence | Stale ledger remains `on_hold` | Divergence detected; emergency alert | PASS |
+| Saga rollback | Downstream audit failure after payout | Claim frozen at `on_hold_frozen`; compensation recorded | PASS |
+| PHI de-identification | SSN, DOB, phone, and email in notes | Direct identifiers replaced before policy evaluation | PASS |
+| Audit export | Machine-readable compliance artifact | SHA-256 fingerprint and provenance fields validated | PASS |
+| API gateway | Health, valid claim, and placeholder requests | Async FastAPI responses preserve adjudicator contracts | PASS |
+| CLI scenarios | Nominal and placeholder flags | Each scenario exits successfully | PASS |
 
 ### Exact pytest output
 
@@ -185,19 +190,26 @@ platform win32 -- Python 3.14.0, pytest-9.1.1, pluggy-1.6.0 -- C:\Python314\pyth
 cachedir: .pytest_cache
 rootdir: D:\Yash\Hackathon\Lemma
 plugins: anyio-4.15.1
-collecting ... collected 6 items
+collecting ... collected 13 items
 
-tests/test_reliability.py::test_nominal_adjudication_success PASSED      [ 16%]
-tests/test_reliability.py::test_lemma_silent_failure_prevention[patient_id-unknown] PASSED [ 33%]
-tests/test_reliability.py::test_lemma_silent_failure_prevention[claim_id-TBD] PASSED [ 50%]
-tests/test_reliability.py::test_ungrounded_evidence_rejection PASSED     [ 66%]
-tests/test_reliability.py::test_clinical_criteria_denial PASSED          [ 83%]
-tests/test_reliability.py::test_arga_state_divergence_detection PASSED   [100%]
+tests/test_enhancements.py::test_phi_deidentification_scrubbing PASSED   [  7%]
+tests/test_enhancements.py::test_audit_json_export_structure PASSED      [ 15%]
+tests/test_enhancements.py::test_cli_scenario_flags PASSED               [ 23%]
+tests/test_reliability.py::test_nominal_adjudication_success PASSED      [ 30%]
+tests/test_reliability.py::test_lemma_silent_failure_prevention[patient_id-unknown] PASSED [ 38%]
+tests/test_reliability.py::test_lemma_silent_failure_prevention[claim_id-TBD] PASSED [ 46%]
+tests/test_reliability.py::test_ungrounded_evidence_rejection PASSED     [ 53%]
+tests/test_reliability.py::test_clinical_criteria_denial PASSED          [ 61%]
+tests/test_reliability.py::test_arga_state_divergence_detection PASSED   [ 69%]
+tests/test_reliability.py::test_saga_compensating_rollback_on_divergence PASSED [ 76%]
+tests/test_server.py::test_healthz PASSED                                [ 84%]
+tests/test_server.py::test_adjudicate_valid_claim PASSED                 [ 92%]
+tests/test_server.py::test_adjudicate_placeholder_claim PASSED           [100%]
 
-============================= 6 passed in 40.20s ==============================
+============================= 13 passed in 36.78s =============================
 ```
 
-The five required scenarios produce six test executions because silent-failure prevention is parameterized across two independent placeholder fields.
+The suite now executes 13 tests across reliability, Saga compensation, PHI de-identification, audit export, CLI scenarios, and the asynchronous API layer.
 
 ## 5. Quickstart & Setup
 
