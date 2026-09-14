@@ -14,12 +14,28 @@
   </a>
 </p>
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Vercel-000000?style=for-the-badge&logo=vercel)](https://aegis-claim-seven.vercel.app)
+[![API Health](https://img.shields.io/badge/API%20Health-Render-46E3B7?style=for-the-badge&logo=render&logoColor=000000)](https://aegis-claim.onrender.com/healthz)
+![Next.js](https://img.shields.io/badge/Next.js-14%2B%20App%20Router-000000?style=for-the-badge&logo=nextdotjs)
+![FastAPI & Docker](https://img.shields.io/badge/FastAPI%20%26%20Docker-Production-009688?style=for-the-badge&logo=fastapi)
+![High Assurance](https://img.shields.io/badge/Digital%20Twin-High%20Assurance-0EA5E9?style=for-the-badge)
+
 ![Pytest](https://img.shields.io/badge/Pytest-13%2F13%20Passing-2ea44f?style=for-the-badge)
 ![Responsible AI](https://img.shields.io/badge/Responsible%20AI-Auditable-5b4bdb?style=for-the-badge)
 ![Arga Digital Twin](https://img.shields.io/badge/Arga%20Digital%20Twin-Verified-0969da?style=for-the-badge)
 ![Lemma](https://img.shields.io/badge/Lemma-Zero%20Silent%20Failure-c2185b?style=for-the-badge)
 
 > AegisClaim is a bounded, auditable multi-app agent that evaluates medical claim disputes against versioned clinical policy, prevents unsafe writes, verifies financial state after every mutation, and sends a structured compliance record to Slack.
+
+### Live production deployment
+
+| Surface | Production endpoint | Runtime |
+|---|---|---|
+| **Control Center** | [aegis-claim-seven.vercel.app](https://aegis-claim-seven.vercel.app) | Next.js App Router on Vercel |
+| **FastAPI service** | [aegis-claim.onrender.com](https://aegis-claim.onrender.com) | Dockerized Python service on Render |
+| **Health check** | [`/healthz`](https://aegis-claim.onrender.com/healthz) | Live engine and twin-mode status |
+
+> **Render free-tier cold start:** the backend may spin down after 15 minutes of inactivity. The first request after an idle period can take approximately **30–45 seconds** while Render starts the container. Subsequent requests are responsive.
 
 ## 1. Project Overview
 
@@ -92,7 +108,28 @@ A financial mutation is not treated as successful merely because the write metho
 
 Guardrail failures and state divergence are routed as high-priority cards to `#compliance-escalations` before any further automated action.
 
-## 3. Architecture & Visual Workflow
+## 3. Production Architecture & Visual Workflow
+
+### Deployment topology
+
+```mermaid
+flowchart LR
+    U[Reviewer Browser] -->|HTTPS| V[Next.js Control Center<br/>Vercel Edge]
+    V -->|JSON / CORS| R[FastAPI API<br/>Docker on Render]
+    R --> O[AegisAdjudicator]
+    O --> L{Lemma Safety Guard}
+    L --> GH[(GitHub Policy Twin<br/>sha_c9f482a)]
+    GH --> ST[(Stripe Ledger Twin)]
+    ST --> AR{Arga Read-After-Write<br/>Verification}
+    AR --> SL[(Slack Audit Twin)]
+```
+
+- **Frontend:** the [`frontend/`](frontend/) application uses Next.js App Router, TypeScript, Tailwind CSS, and Lucide icons. Vercel serves the production control center at [aegis-claim-seven.vercel.app](https://aegis-claim-seven.vercel.app).
+- **Backend:** [`aegis/server.py`](aegis/server.py) exposes the typed FastAPI gateway and SSE stream. The service is packaged by the root [`Dockerfile`](Dockerfile) and deployed on Render at [aegis-claim.onrender.com](https://aegis-claim.onrender.com).
+- **High-assurance digital twin:** Stripe ledger transitions, GitHub policy provenance (`sha_c9f482a`), and Slack audit dispatches run through deterministic in-memory twins. This preserves the production state-machine semantics while enabling zero-cost, credential-free, and reproducible evaluation.
+- **Safety boundary:** the frontend does not perform adjudication locally. Every submission crosses the typed API boundary and executes the same guarded orchestrator used by the CLI and automated test suite.
+
+### Adjudication state machine
 
 ```mermaid
 flowchart LR
@@ -221,7 +258,22 @@ tests/test_server.py::test_adjudicate_placeholder_claim PASSED           [100%]
 
 The suite now executes 13 tests across reliability, Saga compensation, PHI de-identification, audit export, CLI scenarios, and the asynchronous API layer.
 
-## 5. Quickstart & Setup
+## 5. Interactive Production Demo
+
+Open the [live AegisClaim Control Center](https://aegis-claim-seven.vercel.app). If the API has been idle, allow up to 30–45 seconds for the initial Render request, then use one of the scenario controls:
+
+1. **Nominal Path — `Load Nominal`**  
+   Loads a clinically valid TAVR claim, validates CPT-33361 and ICD-10 I35.0 against the deterministic CMS policy, grounds the evidence verbatim, and completes all five controls. The business outcome is **`ADJUDICATED_SETTLED`**, represented by pipeline status `completed`, ledger state `settled_approved`, and a verified expected-versus-observed match.
+
+2. **Adversarial Token Injection — `Inject Adversarial Token ('unknown')`**  
+   Replaces the patient identifier with the forbidden synthetic token `unknown`. The Lemma pre-action safety interlock halts execution at Stage 1, returns `pre_action_guard`, preserves the zero-mutation guarantee, and prevents policy, ledger, and other mutating tools from running.
+
+3. **Saga Rollback Simulation — `Simulate Saga Rollback`**  
+   Runs the valid claim and then injects a downstream audit failure. The Saga coordinator compensates the payout by freezing the ledger at `on_hold_frozen`, records the critical escalation, and displays **`COMPENSATED (ROLLBACK)`** with the divergent state reconciliation.
+
+The dashboard displays policy provenance, the SHA-256 idempotency key, verbatim grounded evidence, five-stage progress, and expected-versus-observed ledger state for each execution.
+
+## 6. Quickstart & Setup
 
 ### Prerequisites
 
@@ -285,6 +337,39 @@ PLACEHOLDER CLAIM
 python -m pytest tests/ -v
 ```
 
+### Run the Dockerized API
+
+Build and start the production FastAPI image from the repository root:
+
+```bash
+docker build -t aegisclaim-api .
+docker run --rm -p 8000:8000 aegisclaim-api
+```
+
+Verify the local service in another terminal:
+
+```bash
+curl http://localhost:8000/healthz
+```
+
+API documentation is available at `http://localhost:8000/docs` while the container is running.
+
+### Run the Next.js frontend locally
+
+The dashboard reads `NEXT_PUBLIC_API_URL` and defaults to `http://localhost:8000`, so start the API first and then run:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. To run both production containers together instead, use:
+
+```bash
+docker compose up --build
+```
+
 ### Twin and live configuration
 
 | Variable | Twin/demo value | Live purpose |
@@ -302,7 +387,7 @@ For live mode, provide credentials through process environment variables or an a
 
 [Watch the 2-Minute Architecture & Evaluation Demo](https://www.youtube.com/watch?v=NUNAj7wYMAo)
 
-## 6. Roadmap to Enterprise Production
+## 7. Roadmap to Enterprise Production
 
 | Phase | Engineering work | Reliability objective |
 |---|---|---|
